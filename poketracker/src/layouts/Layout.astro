@@ -1,0 +1,32 @@
+---
+interface Props {
+  title?: string
+  description?: string
+}
+
+const {
+  title = "Amazon Price Tracker",
+  description = "Seguimiento automatizado de precios de productos en Amazon.",
+} = Astro.props
+---
+
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <meta name="description" content={description} />
+    <title>{title}</title>
+  </head>
+  <body>
+    <slot />
+  </body>
+</html>
+
+<style is:global>
+  html, body {
+    margin: 0;
+    background: #09090b;
+  }
+</style>

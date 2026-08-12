@@ -1,0 +1,746 @@
+---
+import Layout from "../layouts/Layout.astro"
+import { resolve } from "node:path"
+import {
+  readDashboardData,
+  type DashboardPoint,
+  type DashboardStats,
+} from "../tracker/dashboard-data.js"
+
+// Astro/Vite carga .env en import.meta.env, no en process.env
+process.env.TURSO_DATABASE_URL ??= import.meta.env.TURSO_DATABASE_URL
+process.env.TURSO_AUTH_TOKEN ??= import.meta.env.TURSO_AUTH_TOKEN
+
+type ProductSummary = {
+  asin: string
+  title: string | null
+  url: string | null
+  currency: string | null
+  latestPrice: number | null
+  previousPrice: number | null
+  minPrice: number
+  maxPrice: number
+  availability: string | null
+  rating: number | null
+  snapshots: number
+  lastSeen: string
+}
+
+let allPoints: DashboardPoint[] = []
+let products: ProductSummary[] = []
+let chartError: string | null = null
+let monitorStats: Array<DashboardStats & { asin: string }> = []
+
+try {
+  const dashboard = await readDashboardData(
+    resolve(process.cwd(), ".pokemon-price-history.json"),
+    resolve(process.cwd(), ".pokemon-monitor-stats.json"),
+  )
+  allPoints = dashboard.points
+  monitorStats = dashboard.stats
+} catch (error) {
+  chartError = error instanceof Error ? error.message : "No se pudo leer el historial local"
+}
+
+const grouped = new Map<string, DashboardPoint[]>()
+for (const point of allPoints) {
+  const list = grouped.get(point.asin) ?? []
+  list.push(point)
+  grouped.set(point.asin, list)
+}
+
+products = [...grouped.entries()].map(([asin, points]) => {
+  const prices = points.flatMap((point) => point.price === null ? [] : [point.price])
+  const latest = points.at(-1)!
+  const previous = points.at(-2) ?? null
+  return {
+    asin,
+    title: null,
+    url: `https://www.amazon.com.mx/dp/${asin}`,
+    currency: latest.currency,
+    latestPrice: latest.price,
+    previousPrice: previous?.price ?? null,
+    minPrice: prices.length > 0 ? Math.min(...prices) : 0,
+    maxPrice: prices.length > 0 ? Math.max(...prices) : 0,
+    availability: latest.availability,
+    rating: null,
+    snapshots: points.length,
+    lastSeen: latest.scrapedAt,
+  }
+})
+
+const groupedByAsin = new Map<string, DashboardPoint[]>()
+for (const point of allPoints) {
+  const list = groupedByAsin.get(point.asin) ?? []
+  list.push(point)
+  groupedByAsin.set(point.asin, list)
+}
+
+const historicalPriceChanges = [...groupedByAsin.values()].reduce(
+  (total, points) =>
+    total + points.reduce(
+      (changes, point, index) =>
+        index > 0 && point.price !== points[index - 1]!.price ? changes + 1 : changes,
+      0,
+    ),
+  0,
+)
+
+const uniqueDays = [...new Set(allPoints.map((p) => p.scrapedAt.slice(0, 10)))]
+
+const fmt = (n: number) => `MX$${n.toFixed(2)}`
+const totalChecks = monitorStats.reduce((total, stats) => total + stats.totalChecks, 0)
+const successfulChecks = monitorStats.reduce((total, stats) => total + stats.successfulChecks, 0)
+const failedChecks = monitorStats.reduce((total, stats) => total + stats.failedChecks, 0)
+const priceChanges = monitorStats.reduce((total, stats) => total + stats.priceChanges, 0)
+const observedPriceChanges = Math.max(priceChanges, historicalPriceChanges)
+---
+
+<Layout>
+  <main class="page">
+    <header class="top">
+      <h1>Price Tracker</h1>
+      {products.length > 0 && (
+        <p class="meta" data-dashboard-meta>
+          {products.length} productos · {allPoints.length} registros · {uniqueDays.length} dias
+        </p>
+      )}
+    </header>
+
+    {monitorStats.length > 0 && (
+      <section class="monitor-stats" aria-label="Estado del monitor" data-monitor-stats>
+        <article><span>Revisiones</span><strong data-total-checks>{totalChecks}</strong></article>
+        <article><span>Exitosas</span><strong data-successful-checks>{successfulChecks}</strong></article>
+        <article><span>Cambios de precio</span><strong data-price-changes>{observedPriceChanges}</strong></article>
+        <article><span>Errores</span><strong data-failed-checks>{failedChecks}</strong></article>
+      </section>
+    )}
+
+    <section class="interval-control" aria-label="Controles del monitor">
+      <span class="control-status" data-control-status>Conectando con el monitor...</span>
+      <span class="master-controls" aria-label="Control general" data-master-controls></span>
+    </section>
+
+    {chartError ? (
+      <div class="notice">{chartError}</div>
+    ) : (
+      <div class="products-dashboard" data-products-dashboard></div>
+    )}
+  </main>
+</Layout>
+
+<style>
+  * { box-sizing: border-box; }
+
+  .page {
+    max-width: 960px;
+    margin: 0 auto;
+    padding: 2rem 1.5rem 4rem;
+    color: #e4e4e7;
+    font-family: system-ui, -apple-system, sans-serif;
+    min-height: 100vh;
+  }
+
+  .top {
+    margin-bottom: 2rem;
+  }
+
+  h1 {
+    font-size: 1.5rem;
+    font-weight: 600;
+    margin: 0;
+    color: #fafafa;
+    letter-spacing: -0.02em;
+  }
+
+  .meta {
+    margin: 0.25rem 0 0;
+    font-size: 0.8rem;
+    color: #71717a;
+  }
+
+  .notice {
+    padding: 1.5rem;
+    border: 1px dashed #27272a;
+    border-radius: 8px;
+    color: #71717a;
+    text-align: center;
+    font-size: 0.9rem;
+  }
+
+  .notice code {
+    color: #a1a1aa;
+    background: #18181b;
+    padding: 0.1rem 0.4rem;
+    border-radius: 4px;
+    font-size: 0.85rem;
+  }
+
+  .monitor-stats {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 0.75rem;
+    margin-bottom: 1.5rem;
+  }
+
+  .monitor-stats article {
+    background: #18181b;
+    border: 1px solid #27272a;
+    border-radius: 8px;
+    padding: 0.75rem;
+  }
+
+  .monitor-stats span,
+  :global(.monitor-detail) {
+    align-items: baseline;
+    color: #d4d4d8;
+    display: grid;
+    font-size: 0.78rem;
+    gap: 0.2rem 0.75rem;
+    grid-template-columns: max-content 1fr;
+  }
+
+  .interval-control {
+    align-items: center;
+    color: #a1a1aa;
+    display: flex;
+    flex-wrap: wrap;
+    font-size: 0.8rem;
+    gap: 0.65rem;
+    margin: -0.75rem 0 1.5rem;
+  }
+
+  .master-controls { margin-left: auto; }
+  .products-dashboard { display: grid; gap: 2.5rem; }
+  :global(.product-section) { display: grid; gap: 1rem; }
+  :global(.product-control-card) { align-items: stretch; background: #18181b; border: 1px solid #3f3f46; border-radius: 10px; display: grid; gap: 1rem; grid-template-columns: 140px 1fr auto; min-height: 150px; overflow: hidden; padding: 0.9rem; }
+  :global(.product-image) { background: #fff; border-radius: 7px; height: 132px; object-fit: contain; width: 140px; }
+  :global(.product-copy) { align-content: center; display: grid; gap: 0.3rem; }
+  :global(.product-control-card strong) { color: #fafafa; font-family: ui-monospace, monospace; }
+  :global(.product-control-card small) { color: #a1a1aa; display: block; }
+  :global(.product-control-card small b) { color: #fafafa; }
+  :global(.product-control-card small.error) { color: #fca5a5; }
+  :global(.stock-status) { font-size: 0.78rem; font-weight: 700; width: max-content; }
+  :global(.stock-status.available) { color: #86efac; }
+  :global(.stock-status.unavailable) { color: #fca5a5; }
+  :global(.stock-status.reseller) { color: #fbbf24; }
+  :global(.product-toggle) { align-self: center; background: #27272a; border: 1px solid #52525b; color: #e4e4e7; cursor: pointer; padding: 0.4rem 0.55rem; }
+  :global(.product-toggle.active) { border-color: #16a34a; color: #86efac; }
+  :global(.product-actions) { align-content: center; display: grid; gap: 0.75rem; justify-items: end; }
+  :global(.product-interval) { color: #a1a1aa; display: grid; font-size: 0.72rem; gap: 0.3rem; }
+  :global(.product-interval select) { background: #27272a; border: 1px solid #52525b; color: #e4e4e7; cursor: pointer; font: inherit; min-width: 7.5rem; padding: 0.4rem; }
+  :global(.product-interval select:disabled) { cursor: wait; opacity: 0.6; }
+  :global(.master-control) { grid-column: 1 / -1; }
+  .control-status { color: #71717a; }
+
+  .monitor-stats strong {
+    color: #fafafa;
+    display: block;
+    font-size: 1.25rem;
+    margin-top: 0.25rem;
+  }
+
+  :global(.monitor-detail) {
+    grid-column: 1 / -1;
+    margin: 0;
+  }
+
+  [data-monitor-details] { grid-column: 1 / -1; }
+
+  :global(.monitor-detail strong) {
+    color: #fafafa;
+    font-family: ui-monospace, monospace;
+    font-size: 0.8rem;
+    grid-column: 1 / -1;
+    margin: 0 0 0.25rem;
+  }
+
+  :global(.monitor-detail span) { color: #a1a1aa; }
+  :global(.monitor-detail b) { color: #fafafa; font-weight: 500; }
+  :global(.monitor-detail small) { color: #fca5a5; grid-column: 1 / -1; }
+
+  :global(.dot) {
+    border-radius: 50%;
+    display: inline-block;
+    flex: 0 0 auto;
+    height: 8px;
+    width: 8px;
+  }
+
+  :global(.price-flow) {
+    background: #18181b;
+    border: 1px solid #27272a;
+    border-radius: 8px;
+    margin-bottom: 1.5rem;
+    overflow: hidden;
+    padding: 0.85rem 1rem 1rem;
+  }
+
+  :global(.flow-head) {
+    align-items: baseline;
+    display: flex;
+    gap: 0.65rem;
+    justify-content: space-between;
+    margin-bottom: 0.75rem;
+  }
+
+  :global(.flow-head h2) {
+    color: #fafafa;
+    font-size: 0.9rem;
+    font-weight: 600;
+    margin: 0;
+  }
+
+  :global(.flow-head span) { color: #a1a1aa; font-size: 0.72rem; }
+
+  :global(.flow-track) {
+    display: flex;
+    gap: 0.45rem;
+    overflow-x: auto;
+    padding-bottom: 0.35rem;
+    scrollbar-color: #52525b transparent;
+  }
+
+  :global(.flow-item) {
+    align-items: center;
+    background: #27272a;
+    border: 1px solid #3f3f46;
+    color: #d4d4d8;
+    display: inline-flex;
+    flex: 0 0 auto;
+    flex-direction: column;
+    gap: 0.45rem;
+    min-width: 9rem;
+    padding: 0.65rem 0.8rem;
+  }
+
+  :global(.flow-item b) { font-size: 0.9rem; }
+  :global(.flow-item small) { color: #d4d4d8; font-size: 0.72rem; }
+  :global(.flow-item.target) { background: #2a2312; border-color: #a16207; color: #fef3c7; }
+  :global(.flow-item.no-stock) { background: #2a1517; border-color: #7f1d1d; color: #fecaca; }
+  :global(.flow-item.reseller) { background: #2a2112; border-color: #92400e; color: #fde68a; }
+  :global(.empty-reading) { color: #71717a; font-size: 0.8rem; padding: 0.8rem; }
+
+  :global(.flow-item.new-reading) {
+    animation: reading-arrives 1.35s cubic-bezier(0.16, 1, 0.3, 1);
+    position: relative;
+    transform-origin: right center;
+    will-change: opacity, transform, box-shadow;
+  }
+
+  :global(.flow-item.new-reading::after) {
+    color: #93c5fd;
+    content: "NUEVO";
+    font-size: 0.55rem;
+    font-weight: 800;
+    letter-spacing: 0.08em;
+    position: absolute;
+    right: 0.35rem;
+    top: 0.25rem;
+  }
+
+  @keyframes reading-arrives {
+    0% {
+      opacity: 0;
+      box-shadow: 0 0 0 rgba(59, 130, 246, 0);
+      transform: perspective(700px) translate3d(80px, -18px, 80px) rotateY(-65deg) rotateX(18deg) scale(0.72);
+    }
+    45% {
+      opacity: 1;
+      box-shadow: 0 0 28px rgba(59, 130, 246, 0.75);
+      transform: perspective(700px) translate3d(-8px, 0, 20px) rotateY(8deg) rotateX(-3deg) scale(1.08);
+    }
+    100% {
+      opacity: 1;
+      box-shadow: 0 0 0 rgba(59, 130, 246, 0);
+      transform: perspective(700px) translate3d(0, 0, 0) rotateY(0) rotateX(0) scale(1);
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    :global(.flow-item.new-reading) { animation: none; }
+  }
+
+  /* --- Chart --- */
+  :global(.chart-box) {
+    background: #18181b;
+    border: 1px solid #27272a;
+    border-radius: 8px;
+    padding: 1rem;
+  }
+
+  :global(.chart-head) {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 0.75rem;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+  }
+
+  :global(.chart-box h2) {
+    font-size: 0.85rem;
+    font-weight: 500;
+    margin: 0;
+    color: #e4e4e7;
+  }
+
+  :global(.legend) {
+    display: flex;
+    gap: 1rem;
+  }
+
+  :global(.legend-item) {
+    display: flex;
+    align-items: center;
+    gap: 0.3rem;
+    font-size: 0.7rem;
+    color: #d4d4d8;
+    font-family: ui-monospace, monospace;
+  }
+
+  :global(.chart) {
+    border-radius: 6px;
+    overflow-x: auto;
+    overflow-y: hidden;
+    position: relative;
+    scrollbar-gutter: stable;
+  }
+
+  :global(.chart svg) {
+    width: max(100%, var(--chart-width, 900px));
+    height: auto;
+    display: block;
+  }
+
+  :global(.grid) {
+    stroke: #3f3f46;
+    stroke-width: 1;
+  }
+
+  :global(.label) {
+    fill: #d4d4d8;
+    font-size: 10px;
+    font-family: ui-monospace, monospace;
+  }
+
+  :global(.point) {
+    cursor: pointer;
+    transition: r 120ms ease;
+  }
+
+  :global(.point:hover) {
+    r: 5;
+  }
+
+  :global(.no-stock-point) { stroke: #fecaca; stroke-width: 2; }
+  :global(.stock-dot) { background: #ef4444; border-radius: 50%; display: inline-block; height: 8px; width: 8px; }
+  :global(.reseller-dot) { background: #f59e0b; border-radius: 50%; display: inline-block; height: 8px; width: 8px; }
+
+  :global(.tooltip) {
+    position: absolute;
+    pointer-events: none;
+    background: #fafafa;
+    color: #18181b;
+    font-size: 0.75rem;
+    font-weight: 500;
+    padding: 0.3rem 0.5rem;
+    border-radius: 6px;
+    white-space: nowrap;
+    opacity: 0;
+    transition: opacity 100ms ease;
+    transform: translate(-50%, -100%);
+    margin-top: -10px;
+    font-family: ui-monospace, monospace;
+  }
+
+  :global(.tooltip.visible) {
+    opacity: 1;
+  }
+
+  @media (max-width: 640px) {
+    :global(.chart-head) { flex-direction: column; align-items: flex-start; }
+    .monitor-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    :global(.flow-head) { align-items: flex-start; flex-direction: column; }
+    :global(.product-control-card) { grid-template-columns: 92px 1fr; }
+    :global(.product-image) { height: 92px; width: 92px; }
+    :global(.product-actions) { grid-column: 1 / -1; justify-items: stretch; }
+    :global(.product-toggle) { width: 100%; }
+  }
+</style>
+
+<script>
+  const controlStatus = document.querySelector<HTMLElement>("[data-control-status]")
+  const masterControls = document.querySelector<HTMLElement>("[data-master-controls]")
+  const productsDashboard = document.querySelector<HTMLElement>("[data-products-dashboard]")
+  const chartContainer = document.getElementById("chart-container")
+  const chartLegend = document.querySelector<HTMLElement>("[data-chart-legend]")
+  const chartTitle = document.querySelector<HTMLElement>("[data-chart-title]")
+  const dashboardMeta = document.querySelector<HTMLElement>("[data-dashboard-meta]")
+  const totalChecksElement = document.querySelector<HTMLElement>("[data-total-checks]")
+  const successfulChecksElement = document.querySelector<HTMLElement>("[data-successful-checks]")
+  const failedChecksElement = document.querySelector<HTMLElement>("[data-failed-checks]")
+  const priceChangesElement = document.querySelector<HTMLElement>("[data-price-changes]")
+  const controlUrl = "/monitor-api"
+  const palette = ["#3b82f6", "#10b981", "#f59e0b", "#ef4444", "#8b5cf6", "#ec4899", "#06b6d4", "#84cc16"]
+  const chartWidth = 900
+  const chartHeight = 340
+  const plotLeft = 58
+  const plotRight = 16
+  const plotTop = 16
+  const plotBottom = 44
+  const dashboardRefreshMs = 15_000
+  const latestReadingByAsin = new Map<string, string>()
+
+  type Point = { asin: string; price: number | null; currency: string; availability: string | null; seller?: string | null; shipper?: string | null; isAvailable?: boolean; hasPurchaseSignal?: boolean; scrapedAt: string }
+  type Stats = { asin: string; totalChecks: number; successfulChecks: number; failedChecks: number; priceChanges: number; lastCheckedAt: string | null; lastPrice: number | null; lastError: string | null }
+  type Product = { asin: string; targetPrice: number }
+  type DashboardPayload = { points: Point[]; stats: Stats[]; products: Product[]; productIntervals: Record<string, number>; masterActive: boolean; enabledProducts: Record<string, boolean>; generatedAt: string }
+
+  const money = (price: number) => `MX$${price.toLocaleString("es-MX", { maximumFractionDigits: 2 })}`
+  const escapeHtml = (value: string) => value.replace(/[&<>"]/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[character]!)
+  const isPurchasable = (point: Point): point is Point & { price: number } =>
+    point.price !== null &&
+    point.isAvailable !== false &&
+    point.hasPurchaseSignal !== false &&
+    !(point.isAvailable === undefined && point.hasPurchaseSignal === undefined && point.availability === null && point.seller == null && point.shipper == null)
+  const isExplicitThirdParty = (point: Point) => {
+    const sellers = [point.seller, point.shipper].filter(Boolean).join(" ")
+    return sellers.length > 0 && !/amazon/i.test(sellers)
+  }
+
+  const setControlStatus = (message: string) => {
+    if (controlStatus) controlStatus.textContent = message
+  }
+
+  const renderChart = (points: Point[]) => {
+    if (!chartContainer || !chartLegend) return
+    const now = Date.now()
+    const start = now - 24 * 60 * 60 * 1_000
+    const windowPoints = points.filter((point) =>
+      new Date(point.scrapedAt).getTime() >= start &&
+      isPurchasable(point),
+    )
+    const prices = windowPoints.map((point) => point.price)
+    const minPrice = prices.length > 0 ? Math.min(...prices) : 0
+    const maxPrice = prices.length > 0 ? Math.max(...prices) : 1
+    const padding = Math.max((maxPrice - minPrice) * 0.1, 1)
+    const yMin = minPrice - padding
+    const yMax = maxPrice + padding
+    const plotWidth = chartWidth - plotLeft - plotRight
+    const plotHeight = chartHeight - plotTop - plotBottom
+    const x = (time: number) => plotLeft + ((time - start) / (now - start)) * plotWidth
+    const y = (price: number) => plotTop + ((yMax - price) / (yMax - yMin)) * plotHeight
+    const asins = [...new Set(windowPoints.map((point) => point.asin))]
+    const colors = new Map(asins.map((asin, index) => [asin, palette[index % palette.length]]))
+    const grouped = new Map<string, Point[]>()
+    windowPoints.forEach((point) => grouped.set(point.asin, [...(grouped.get(point.asin) ?? []), point]))
+    const yTicks = Array.from({ length: 5 }, (_, index) => yMax - (index / 4) * (yMax - yMin))
+    const xTicks = Array.from({ length: 5 }, (_, index) => start + (index / 4) * (now - start))
+    const grids = yTicks.map((value) => `<g><line x1="${plotLeft}" y1="${y(value)}" x2="${chartWidth - plotRight}" y2="${y(value)}" class="grid"/><text x="${plotLeft - 8}" y="${y(value) + 4}" class="label" text-anchor="end">MX$${value.toFixed(0)}</text></g>`).join("")
+    const labels = xTicks.map((time) => `<text x="${x(time)}" y="${chartHeight - plotBottom + 20}" class="label" text-anchor="middle">${new Date(time).toLocaleTimeString("es-MX", { hour: "2-digit", minute: "2-digit" })}</text>`).join("")
+    const series = asins.map((asin) => {
+      const color = colors.get(asin)!
+      const entries = grouped.get(asin)!
+      const path = entries.map((point, index) => `${index === 0 ? "M" : "L"}${x(new Date(point.scrapedAt).getTime()).toFixed(1)} ${y(point.price).toFixed(1)}`).join(" ")
+      const dots = entries.map((point) => `<circle cx="${x(new Date(point.scrapedAt).getTime())}" cy="${y(point.price)}" r="3" fill="${color}" class="point" data-price="${point.price}" data-date="${escapeHtml(new Date(point.scrapedAt).toLocaleString("es-MX"))}"/>`).join("")
+      return `<path d="${path}" fill="none" stroke="${color}" stroke-width="2" stroke-linejoin="round"/>${dots}`
+    }).join("")
+    chartLegend.innerHTML = asins.map((asin) => `<span class="legend-item"><span class="dot" style="background:${colors.get(asin)}"></span>${escapeHtml(asin)}</span>`).join("")
+    chartTitle?.replaceChildren(document.createTextNode("Evolucion de precios · ultimas 24 horas"))
+    chartContainer.innerHTML = `<svg viewBox="0 0 ${chartWidth} ${chartHeight}" role="img" aria-label="Grafico de precios de las ultimas 24 horas">${grids}${labels}${series}</svg><div class="tooltip" id="chart-tooltip"></div>`
+    const tooltip = chartContainer.querySelector<HTMLElement>("#chart-tooltip")
+    const svg = chartContainer.querySelector("svg")
+    chartContainer.querySelectorAll<SVGCircleElement>(".point").forEach((point) => {
+      point.addEventListener("mouseenter", () => {
+        if (!tooltip || !svg) return
+        tooltip.textContent = `MX$${point.dataset.price} · ${point.dataset.date}`
+        tooltip.classList.add("visible")
+        const box = svg.getBoundingClientRect()
+        tooltip.style.left = `${(parseFloat(point.getAttribute("cx")!) / chartWidth) * box.width}px`
+        tooltip.style.top = `${(parseFloat(point.getAttribute("cy")!) / chartHeight) * box.height}px`
+      })
+      point.addEventListener("mouseleave", () => tooltip?.classList.remove("visible"))
+    })
+  }
+
+  const buildProductChart = (asin: string, points: Point[], color: string) => {
+    const now = Date.now()
+    const start = now - 24 * 60 * 60 * 1_000
+    const events = points.filter((point) => new Date(point.scrapedAt).getTime() >= start)
+    const priced = events.filter((point): point is Point & { price: number } => point.price !== null)
+    const prices = priced.map((point) => point.price)
+    const productChartWidth = Math.max(chartWidth, plotLeft + plotRight + Math.max(events.length - 1, 1) * 18)
+    const hasPrices = prices.length > 0
+    const minPrice = prices.length > 0 ? Math.min(...prices) : 0
+    const maxPrice = prices.length > 0 ? Math.max(...prices) : 1
+    const padding = Math.max((maxPrice - minPrice) * 0.1, 1)
+    const yMin = minPrice - padding
+    const yMax = maxPrice + padding
+    const plotWidth = productChartWidth - plotLeft - plotRight
+    const plotHeight = chartHeight - plotTop - plotBottom
+    const eventIndex = new Map(events.map((point, index) => [point, index]))
+    const x = (point: Point) => plotLeft + ((eventIndex.get(point) ?? 0) / Math.max(events.length - 1, 1)) * plotWidth
+    const y = (price: number) => plotTop + ((yMax - price) / (yMax - yMin)) * plotHeight
+    const ticks = Array.from({ length: 5 }, (_, index) => yMax - (index / 4) * (yMax - yMin))
+    const timeTickCount = Math.min(5, Math.max(events.length, 1))
+    const timeTicks = Array.from({ length: timeTickCount }, (_, index) => {
+      if (events.length === 0) return { x: plotLeft + (index / Math.max(timeTickCount - 1, 1)) * plotWidth, time: now }
+      const eventPosition = Math.round((index / Math.max(timeTickCount - 1, 1)) * (events.length - 1))
+      const point = events[eventPosition]!
+      return { x: x(point), time: new Date(point.scrapedAt).getTime() }
+    })
+    const noStockY = hasPrices ? plotTop + plotHeight : plotTop + plotHeight / 2
+    const grids = hasPrices
+      ? ticks.map((value) => `<g><line x1="${plotLeft}" y1="${y(value)}" x2="${productChartWidth - plotRight}" y2="${y(value)}" class="grid"/><text x="${plotLeft - 8}" y="${y(value) + 4}" class="label" text-anchor="end">MX$${value.toFixed(0)}</text></g>`).join("")
+      : `<g><line x1="${plotLeft}" y1="${noStockY}" x2="${productChartWidth - plotRight}" y2="${noStockY}" class="grid"/><text x="${plotLeft - 8}" y="${noStockY + 4}" class="label" text-anchor="end">Sin stock</text></g>`
+    const labels = timeTicks.map((tick) => `<text x="${tick.x}" y="${chartHeight - plotBottom + 20}" class="label" text-anchor="middle">${new Date(tick.time).toLocaleTimeString("es-MX", { hour: "2-digit", minute: "2-digit" })}</text>`).join("")
+    const path = priced.map((point, index) => `${index === 0 ? "M" : "L"}${x(point).toFixed(1)} ${y(point.price).toFixed(1)}`).join(" ")
+    const priceDots = priced.map((point) => {
+      const thirdParty = isExplicitThirdParty(point)
+      return `<circle cx="${x(point)}" cy="${y(point.price)}" r="${thirdParty ? 5 : 3}" fill="${thirdParty ? "#f59e0b" : color}" class="point" data-tooltip="${escapeHtml(`${thirdParty ? "Revendedor · " : ""}${money(point.price)} · ${new Date(point.scrapedAt).toLocaleString("es-MX")}`)}"/>`
+    }).join("")
+    const noStockDots = events.filter((point) => !isPurchasable(point)).map((point) => `<circle cx="${x(point)}" cy="${noStockY}" r="4" fill="#ef4444" class="point no-stock-point" data-tooltip="${escapeHtml(`Sin stock · ${new Date(point.scrapedAt).toLocaleString("es-MX")}`)}"/>`).join("")
+    return `<div class="chart-head"><h2>Evolución de precio · últimas 24 horas</h2><span class="legend-item"><span class="dot" style="background:${color}"></span>${escapeHtml(asin)} · 💀 Revendedor · <i class="stock-dot"></i> Sin stock</span></div><div class="chart" data-product-chart="${escapeHtml(asin)}" style="--chart-width:${productChartWidth}px"><svg viewBox="0 0 ${productChartWidth} ${chartHeight}" role="img" aria-label="Gráfica de ${escapeHtml(asin)}">${grids}${labels}${path ? `<path d="${path}" fill="none" stroke="${color}" stroke-width="2" stroke-linejoin="round"/>` : ""}${priceDots}${noStockDots}</svg><div class="tooltip"></div></div>`
+  }
+
+  const renderDashboard = (payload: DashboardPayload) => {
+    const stats = payload.stats
+    const totalChecks = stats.reduce((total, entry) => total + entry.totalChecks, 0)
+    const successfulChecks = stats.reduce((total, entry) => total + entry.successfulChecks, 0)
+    const failedChecks = stats.reduce((total, entry) => total + entry.failedChecks, 0)
+    const changes = payload.points.reduce((total, point, index, entries) => index > 0 && point.price !== entries[index - 1]?.price ? total + 1 : total, 0)
+    if (totalChecksElement) totalChecksElement.textContent = String(totalChecks)
+    if (successfulChecksElement) successfulChecksElement.textContent = String(successfulChecks)
+    if (failedChecksElement) failedChecksElement.textContent = String(failedChecks)
+    if (priceChangesElement) priceChangesElement.textContent = String(changes)
+    if (dashboardMeta) dashboardMeta.textContent = `${new Set(payload.points.map((point) => point.asin)).size} productos · ${payload.points.length} registros`
+    if (masterControls) {
+      masterControls.innerHTML = `<button class="product-toggle master-control ${payload.masterActive ? "active" : ""}" data-master-toggle>${payload.masterActive ? "Pausar todo" : "Reanudar todo"}</button>`
+      masterControls.querySelector<HTMLButtonElement>("[data-master-toggle]")?.addEventListener("click", () => void updateControl("/master", !payload.masterActive))
+    }
+    if (productsDashboard) {
+      const previousScrollByAsin = new Map(
+        [...productsDashboard.querySelectorAll<HTMLElement>("[data-product-section]")].map((section) => [
+          section.dataset.productSection!,
+          section.querySelector<HTMLElement>(".flow-track")?.scrollLeft ?? 0,
+        ]),
+      )
+      const previousChartScrollByAsin = new Map(
+        [...productsDashboard.querySelectorAll<HTMLElement>("[data-product-section]")].map((section) => {
+          const chart = section.querySelector<HTMLElement>("[data-product-chart]")
+          const wasAtEnd = !chart || chart.scrollLeft >= chart.scrollWidth - chart.clientWidth - 8
+          return [section.dataset.productSection!, wasAtEnd ? Number.POSITIVE_INFINITY : chart.scrollLeft] as const
+        }),
+      )
+      productsDashboard.innerHTML = payload.products.map((product, index) => {
+        const stat = payload.stats.find((entry) => entry.asin === product.asin)
+        const active = payload.masterActive && payload.enabledProducts[product.asin] !== false
+        const points = payload.points.filter((point) => point.asin === product.asin)
+        const latestPoint = points.at(-1)
+        const currentAvailable = stat?.lastPrice !== null && latestPoint ? isPurchasable(latestPoint) : false
+        const currentThirdParty = currentAvailable && latestPoint ? isExplicitThirdParty(latestPoint) : false
+        const currentStatus = currentThirdParty ? "💀 Sólo revendedor" : currentAvailable ? "Disponible" : "Sin stock"
+        const currentLabel = currentAvailable && stat?.lastPrice != null ? money(stat.lastPrice) : "Sin stock"
+        const recent = points.slice(-60).sort((a, b) => a.scrapedAt.localeCompare(b.scrapedAt))
+        if (stat?.lastCheckedAt && (!latestPoint || stat.lastCheckedAt > latestPoint.scrapedAt)) {
+          recent.push({ asin: product.asin, price: stat.lastPrice, currency: "MXN", availability: stat.lastPrice === null ? "Sin stock" : null, isAvailable: stat.lastPrice !== null, hasPurchaseSignal: stat.lastPrice !== null, scrapedAt: stat.lastCheckedAt })
+        }
+        const readings = recent.map((point) => {
+          const available = isPurchasable(point)
+          const thirdParty = available && isExplicitThirdParty(point)
+          const target = available && !thirdParty && point.price <= product.targetPrice
+          const content = !available
+            ? `<b>⛔ Sin stock</b>`
+            : thirdParty
+              ? `<b title="Oferta de revendedor">💀 ${money(point.price)}</b>`
+              : `<b>${target ? "👑" : "💀"} ${money(point.price)}</b>`
+          return `<span class="flow-item ${!available ? "no-stock" : thirdParty ? "reseller" : target ? "target" : ""}" data-reading-at="${point.scrapedAt}">${content}<small>${new Date(point.scrapedAt).toLocaleTimeString("es-MX", { hour: "2-digit", minute: "2-digit" })}</small></span>`
+        }).join("") || `<span class="empty-reading">Todavía no hay revisiones guardadas</span>`
+        const color = palette[index % palette.length]!
+        const interval = payload.productIntervals[product.asin] ?? 5
+        const intervalOptions = [1, 5, 10, 30, 60].map((minutes) => `<option value="${minutes}" ${minutes === interval ? "selected" : ""}>${minutes} min</option>`).join("")
+        return `<section class="product-section" data-product-section="${product.asin}"><article class="product-control-card"><img class="product-image" src="/products/item${index + 1}.jpg" alt="Producto ${escapeHtml(product.asin)}"><div class="product-copy"><strong>${escapeHtml(product.asin)}</strong><span class="stock-status ${currentThirdParty ? "reseller" : currentAvailable ? "available" : "unavailable"}">${currentStatus}</span><small>Precio actual: <b>${currentLabel}</b></small><small>Precio máximo: ${money(product.targetPrice)}</small><small>Última revisión: ${stat?.lastCheckedAt ? escapeHtml(new Date(stat.lastCheckedAt).toLocaleString("es-MX")) : "Sin datos"}</small>${stat?.lastError ? `<small class="error">Error: ${escapeHtml(stat.lastError)}</small>` : ""}</div><div class="product-actions"><label class="product-interval">Revisar cada<select data-product-interval="${product.asin}">${intervalOptions}</select></label><button class="product-toggle ${active ? "active" : ""}" data-product-toggle="${product.asin}">${active ? "Activo" : "Pausado"}</button></div></article><section class="price-flow" aria-label="Últimas lecturas de ${product.asin}"><div class="flow-head"><h2>Últimas lecturas</h2><span>${escapeHtml(product.asin)}</span></div><div class="flow-track">${readings}</div></section><section class="chart-box">${buildProductChart(product.asin, points, color)}</section></section>`
+      }).join("")
+      productsDashboard.querySelectorAll<HTMLButtonElement>("[data-product-toggle]").forEach((button) => button.addEventListener("click", () => void updateControl(`/products/${button.dataset.productToggle}`, payload.enabledProducts[button.dataset.productToggle!] === false)))
+      productsDashboard.querySelectorAll<HTMLSelectElement>("[data-product-interval]").forEach((select) => select.addEventListener("change", () => void updateProductInterval(select)))
+      productsDashboard.querySelectorAll<HTMLElement>("[data-product-section]").forEach((section) => {
+        const asin = section.dataset.productSection!
+        const track = section.querySelector<HTMLElement>(".flow-track")
+        const chart = section.querySelector<HTMLElement>("[data-product-chart]")
+        const readings = track?.querySelectorAll<HTMLElement>("[data-reading-at]") ?? []
+        const newest = readings.item(readings.length - 1)
+        const newestAt = newest?.dataset.readingAt
+        const previousAt = latestReadingByAsin.get(asin)
+        const hasNewReading = Boolean(previousAt && newestAt && newestAt > previousAt)
+        if (newestAt) latestReadingByAsin.set(asin, newestAt)
+        if (hasNewReading) newest?.classList.add("new-reading")
+        if (track) {
+          track.scrollLeft = !previousAt || hasNewReading
+            ? track.scrollWidth
+            : previousScrollByAsin.get(asin) ?? track.scrollWidth
+        }
+        if (chart) {
+          const previousChartScroll = previousChartScrollByAsin.get(asin)
+          chart.scrollLeft = previousChartScroll === undefined || !Number.isFinite(previousChartScroll)
+            ? chart.scrollWidth
+            : previousChartScroll
+        }
+      })
+      productsDashboard.querySelectorAll<SVGCircleElement>(".point").forEach((point) => {
+        point.addEventListener("mouseenter", () => {
+          const chart = point.closest<HTMLElement>(".chart")
+          const tooltip = chart?.querySelector<HTMLElement>(".tooltip")
+          const svg = chart?.querySelector("svg")
+          if (!chart || !tooltip || !svg) return
+          tooltip.textContent = point.dataset.tooltip ?? ""
+          tooltip.classList.add("visible")
+          const box = svg.getBoundingClientRect()
+          tooltip.style.left = `${(parseFloat(point.getAttribute("cx")!) / svg.viewBox.baseVal.width) * box.width}px`
+          tooltip.style.top = `${(parseFloat(point.getAttribute("cy")!) / chartHeight) * box.height}px`
+        })
+        point.addEventListener("mouseleave", () => point.closest(".chart")?.querySelector(".tooltip")?.classList.remove("visible"))
+      })
+    }
+    const state = payload.masterActive ? "Monitor activo" : "Monitor pausado"
+    setControlStatus(`${state} · panel cada ${dashboardRefreshMs / 1_000} s · actualizado ${new Date(payload.generatedAt).toLocaleTimeString("es-MX", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}`)
+  }
+
+  const updateControl = async (path: string, active: boolean) => {
+    try {
+      const response = await fetch(`${controlUrl}${path}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ active }) })
+      if (!response.ok) throw new Error("No se pudo actualizar")
+      await refreshDashboard()
+    } catch { setControlStatus("No se pudo conectar con el monitor") }
+  }
+
+  const updateProductInterval = async (select: HTMLSelectElement) => {
+    select.disabled = true
+    try {
+      const response = await fetch(`${controlUrl}/products/${select.dataset.productInterval}/interval`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ checkIntervalMinutes: Number(select.value) }),
+      })
+      if (!response.ok) throw new Error("No se pudo actualizar")
+      await refreshDashboard()
+    } catch {
+      setControlStatus("No se pudo conectar con el monitor")
+    } finally {
+      select.disabled = false
+    }
+  }
+
+  const refreshDashboard = async () => {
+    try {
+      const response = await fetch(`${controlUrl}/dashboard`, { cache: "no-store" })
+      if (!response.ok) throw new Error("Monitor no disponible")
+      renderDashboard(await response.json() as DashboardPayload)
+    } catch {
+      setControlStatus("Monitor apagado · mostrando el último dato")
+    }
+  }
+
+  void refreshDashboard()
+  window.setInterval(() => { void refreshDashboard() }, dashboardRefreshMs)
+</script>

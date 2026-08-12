@@ -1,0 +1,35 @@
+{
+  "name": "decodo-video",
+  "type": "module",
+  "version": "0.0.1",
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "scripts": {
+    "dev": "astro dev",
+    "build": "astro build",
+    "preview": "astro preview",
+    "astro": "astro",
+    "test": "tsx --test src/tracker/*.test.ts",
+    "typecheck": "tsc --noEmit",
+    "track": "tsx src/tracker/index.ts",
+    "track:manual": "tsx src/tracker/manual-scraper.ts",
+    "track:proxy": "tsx src/tracker/proxy-scraper.ts",
+    "track:mx": "tsx src/tracker/pokemon-monitor.ts",
+    "track:mx:watch": "tsx src/tracker/pokemon-monitor.ts --watch",
+    "monitor:start": "tsx src/tracker/pokemon-monitor.ts --watch",
+    "monitor:pokemon": "tsx src/tracker/pokemon-monitor.ts",
+    "telegram:test": "tsx src/tracker/test-telegram.ts"
+  },
+  "dependencies": {
+    "@libsql/client": "0.17.4",
+    "astro": "6.4.8",
+    "dotenv": "17.4.2",
+    "playwright": "^1.62.1"
+  },
+  "devDependencies": {
+    "@types/node": "^24.13.3",
+    "tsx": "4.23.0",
+    "typescript": "5.9.3"
+  }
+}
