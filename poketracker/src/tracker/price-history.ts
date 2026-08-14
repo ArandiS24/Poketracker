@@ -37,9 +37,9 @@ const readStore = async (file: string): Promise<PriceHistoryStore> => {
 
     return parsed as PriceHistoryStore
   } catch (error) {
-    if (typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT") {
-      return {}
-    }
+ if (typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT") {
+  return {}
+}
     throw error
   }
 }
