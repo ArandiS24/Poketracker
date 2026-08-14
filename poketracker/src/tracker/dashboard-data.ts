@@ -33,8 +33,8 @@ export const readDashboardData = async (
   statsFile: string,
 ): Promise<DashboardData> => {
   const [historyRaw, statsRaw] = await Promise.all([
-    readFile(historyFile, "utf8"),
-    readFile(statsFile, "utf8").catch(() => "{}"),
+    readFile(historyFile, "utf8").catch(() => "{}"),
+      readFile(statsFile, "utf8").catch(() => "{}"),
   ])
   const history = JSON.parse(historyRaw) as Record<string, Omit<DashboardPoint, "asin">[]>
   const stats = JSON.parse(statsRaw) as Record<string, DashboardStats>
