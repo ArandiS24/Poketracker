@@ -1,0 +1,7 @@
+.pokemon-*
+.telegram*
+pokemon-price-history.json
+pokemon-price-history.json.txt
+node_modules
+dist
+.env
